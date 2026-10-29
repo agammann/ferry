@@ -1,0 +1,18 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { auditOccurrences } from '../occurrences.mjs';
+const event = x => `BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:a\n${x}\nEND:VEVENT\nEND:VCALENDAR`;
+const audit=(a,b)=>auditOccurrences(a,b,'2027-03-01','2027-04-01').findings[0];
+test('daily local series follows DST',()=>{ const x=event('DTSTART;TZID=America/New_York:20270313T090000\nRRULE:FREQ=DAILY;COUNT=3'); const r=audit(x,x); assert.equal(r.status,'preserved'); assert.deepEqual(r.before.map(o=>o.start),['2027-03-13T14:00:00.000Z','2027-03-14T13:00:00.000Z','2027-03-15T13:00:00.000Z']); });
+test('timezone representations compare by instant',()=>assert.equal(audit(event('DTSTART;TZID=America/New_York:20270313T090000'),event('DTSTART:20270313T140000Z')).status,'preserved'));
+test('exclusion loss changes occurrences',()=>{ const a=event('DTSTART:20270310T090000Z\nRRULE:FREQ=DAILY;COUNT=3\nEXDATE:20270311T090000Z'); const b=a.replace('EXDATE:20270311T090000Z\n',''); assert.equal(audit(a,b).status,'changed'); });
+test('cancellation exception changes occurrences',()=>{ const a=event('DTSTART:20270310T090000Z\nRRULE:FREQ=DAILY;COUNT=3').replace('END:VCALENDAR','BEGIN:VEVENT\nUID:a\nRECURRENCE-ID:20270311T090000Z\nSTATUS:CANCELLED\nEND:VEVENT\nEND:VCALENDAR'); const b=event('DTSTART:20270310T090000Z\nRRULE:FREQ=DAILY;COUNT=3'); assert.equal(audit(a,b).status,'changed'); });
+test('moved exception is represented',()=>{ const a=event('DTSTART:20270310T090000Z\nRRULE:FREQ=DAILY;COUNT=2').replace('END:VCALENDAR','BEGIN:VEVENT\nUID:a\nRECURRENCE-ID:20270311T090000Z\nDTSTART:20270311T110000Z\nEND:VEVENT\nEND:VCALENDAR'); assert.equal(audit(a,a).before[1].start,'2027-03-11T11:00:00.000Z'); });
+test('UID rewrite stays unresolved',()=>assert.equal(audit(event('DTSTART:20270310T090000Z'),event('DTSTART:20270310T090000Z').replace('UID:a','UID:b')).status,'unverifiable'));
+test('dropped field changes occurrence',()=>assert.equal(audit(event('DTSTART:20270310T090000Z\nDESCRIPTION:hello'),event('DTSTART:20270310T090000Z')).status,'changed'));
+test('unsupported rule is unknown',()=>assert.equal(audit(event('DTSTART:20270310T090000Z\nRRULE:FREQ=MONTHLY;COUNT=2'),event('DTSTART:20270310T090000Z\nRRULE:FREQ=MONTHLY;COUNT=2')).status,'unverifiable'));
+test('ambiguous DST time is unknown',()=>{ const x=event('DTSTART;TZID=America/New_York:20271107T013000'); assert.equal(audit(x,x).status,'unverifiable'); });
+test('unknown fields block conclusions',()=>{const x=event('DTSTART:20270310T090000Z\nX-WHATEVER:1'); assert.equal(audit(x,x).status,'unverifiable');});
+test('invalid window is rejected',()=>assert.throws(()=>auditOccurrences('','','2027-02-30','2027-04-01')));
+test('status changes are visible',()=>assert.equal(audit(event('DTSTART:20270310T090000Z\nSTATUS:TENTATIVE'),event('DTSTART:20270310T090000Z\nSTATUS:CONFIRMED')).status,'changed'));
+test('embedded timezone blocks interpretation',()=>{const x=event('DTSTART:20270310T090000Z').replace('END:VCALENDAR','BEGIN:VTIMEZONE\nEND:VTIMEZONE\nEND:VCALENDAR'); assert.equal(audit(x,x).status,'unverifiable');});
