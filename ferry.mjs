@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 // Research prototype: deliberately avoids interpreting unsupported calendar semantics.
-import { readFileSync, writeFileSync, openSync, closeSync, fstatSync, lstatSync, unlinkSync } from 'node:fs';
+import { readSync, writeFileSync, openSync, closeSync, fstatSync, lstatSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { auditOccurrences } from './occurrences.mjs';
+import { auditOccurrences, checkCalendarSizes, MAX_INPUT_BYTES } from './occurrences.mjs';
+
+function readCalendar(path, remaining) {
+  const fd=openSync(path,'r');
+  try {
+    const bytes=Buffer.alloc(remaining+1); let used=0, n;
+    while(used<bytes.length && (n=readSync(fd,bytes,used,bytes.length-used,null))>0) used+=n;
+    if(used>remaining) throw Error('Calendar input budget exceeded');
+    return {text:bytes.toString('utf8',0,used), bytes:used};
+  } finally { closeSync(fd); }
+}
 
 const supported = new Set(['UID','SUMMARY','DESCRIPTION','LOCATION','DTSTART','DTEND','STATUS']);
 const ignored = new Set(['DTSTAMP','LAST-MODIFIED','CREATED','SEQUENCE']);
@@ -25,6 +35,7 @@ export function parse(text) {
   return events;
 }
 export function compare(before, after) {
+  checkCalendarSizes(before, after);
   const left = parse(before), right = parse(after), findings = [];
   const index = events => { const m = new Map(); for (const e of events) { const uid = e.fields.UID?.[0]; if (uid) m.set(uid, [...(m.get(uid) || []), e]); else findings.push({status:'unverifiable', reason:'Event without UID'}); } return m; };
   const a = index(left), b = index(right);
@@ -62,5 +73,5 @@ export function writeReports(output, report) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [before, after, output, start, end] = process.argv.slice(2);
   if (!before || !after || !output || !start || !end) { console.error('Usage: node ferry.mjs BEFORE.ics AFTER.ics REPORT.json START_DATE END_EXCLUSIVE'); process.exitCode = 2; }
-  else { try { const a=readFileSync(before,'utf8'), b=readFileSync(after,'utf8'); const report = compare(a,b); report.occurrenceAudit=auditOccurrences(a,b,start,end); writeReports(output,report); console.log(`Wrote ${output} and ${output}.html`); } catch (e) { console.error(e.message); process.exitCode = 1; } }
+  else { try { const left=readCalendar(before,MAX_INPUT_BYTES), right=readCalendar(after,MAX_INPUT_BYTES-left.bytes), a=left.text, b=right.text; const report = compare(a,b); report.occurrenceAudit=auditOccurrences(a,b,start,end); writeReports(output,report); console.log(`Wrote ${output} and ${output}.html`); } catch (e) { console.error(e.message); process.exitCode = 1; } }
 }
