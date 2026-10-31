@@ -9,7 +9,7 @@ node ferry.mjs examples/before.ics examples/after.ics report.json 2027-01-01 202
 node --test
 ```
 
-The command creates JSON and an offline HTML rendering with exclusive file creation. Both output names must be unused; existing files are never overwritten. If either reservation fails, the newly reserved file is removed where possible. Reports can contain calendar content and should be treated as private. Input hashes identify the UTF-8 decoded content, not necessarily original file bytes. Originals are only read.
+The command creates JSON and an offline HTML rendering with exclusive file creation. Both output names must be unused; existing files are never overwritten. If either reservation fails, the newly reserved file is removed where possible. Reports can contain calendar content and should be treated as private. Input hashes identify the UTF-8 decoded content, not necessarily original file bytes. Originals are only read. The two inputs together must fit within 1 MiB, and occurrence data across both calendars is limited to 1 MiB of compact JSON. The command stops without creating reports when either limit is exceeded.
 
 ## Coverage and limitations
 

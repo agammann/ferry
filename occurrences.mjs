@@ -1,5 +1,11 @@
 // Bounded, deliberately small RFC 5545 subset. All unsupported semantics block conclusions.
 const known = new Set(['UID','DTSTART','DTEND','SUMMARY','DESCRIPTION','LOCATION','STATUS','RRULE','EXDATE','RECURRENCE-ID','DTSTAMP','LAST-MODIFIED','CREATED','SEQUENCE']);
+export const MAX_INPUT_BYTES = 1024 * 1024;
+const MAX_OCCURRENCE_BYTES = 1024 * 1024;
+export function checkCalendarSizes(before, after) {
+  if (Buffer.byteLength(before, 'utf8') + Buffer.byteLength(after, 'utf8') > MAX_INPUT_BYTES) throw Error('Calendar input budget exceeded');
+}
+class BudgetExceeded extends Error {}
 const parts = (line) => { const i=line.indexOf(':'); if(i<0) throw Error('Malformed property'); const [name,...parameters]=line.slice(0,i).split(';'); return {name:name.toUpperCase(),parameters,value:line.slice(i+1)}; };
 function instant(value, parameters) {
   if (!/^\d{8}T\d{6}Z?$/.test(value)) throw Error('Only second-resolution date-times are supported');
@@ -30,7 +36,7 @@ function parse(text) {
 const one=(e,name,required=false)=> { const p=e.filter(x=>x.name===name); if(p.length>1 || (required && p.length!==1)) throw Error('Invalid or repeated '+name); return p[0]; };
 function time(p) { if(!p) throw Error('Missing date-time'); return instant(p.value,p.parameters); }
 function shifted(p,days) { const match=p.value.match(/^(\d{8})T(\d{6})(Z?)$/); if(!match) throw Error('Unsupported date-time'); const d=new Date(Date.UTC(+match[1].slice(0,4),+match[1].slice(4,6)-1,+match[1].slice(6,8)+days)); return {...p,value:d.toISOString().slice(0,10).replace(/-/g,'')+'T'+match[2]+match[3]}; }
-function expand(group, start, end) {
+function expand(group, start, end, budget) {
   if(group.some(e=>e.some(p=>!known.has(p.name)))) throw Error('Unsupported event property or component');
   const masters=group.filter(e=>!one(e,'RECURRENCE-ID')); if(masters.length!==1) throw Error('Missing or duplicate master');
   const master=masters[0], dt=one(master,'DTSTART',true), duration=one(master,'DTEND') ? time(one(master,'DTEND'))-time(dt) : null;
@@ -45,18 +51,20 @@ function expand(group, start, end) {
   for(let i=0;i<count;i++) { const original=time(shifted(dt,i*step)); const over=overrides.get(original); if(over) found.add(original); if(excluded.has(original) && over) throw Error('Conflicting exclusion and override'); if(excluded.has(original)) continue;
     let actual=original, f=fields, dur=one(master,'DTEND') ? time(shifted(one(master,'DTEND'),i*step))-original : null, state=status?.value;
     if(over) { const st=one(over,'STATUS'); if(st && (st.parameters.length || !['CONFIRMED','TENTATIVE','CANCELLED'].includes(st.value))) throw Error('Unsupported override status'); if(!st && status) throw Error('Override omits status while master specifies status; effective status is uncertain'); state=st?.value; if(state!=='CANCELLED') { actual=time(one(over,'DTSTART',true)); const finish=one(over,'DTEND'); dur=finish ? time(finish)-actual : duration; f={...fields}; for(const k of ['SUMMARY','DESCRIPTION','LOCATION']) { const p=one(over,k); if(p) { if(p.parameters.length) throw Error('Unsupported property parameters'); f[k]=p.value; } } } }
-    if(state==='CANCELLED') continue; if(dur!==null && dur<0) throw Error('Negative duration'); if(actual>=start && actual<end) occurrences.push({original:new Date(original).toISOString(),start:new Date(actual).toISOString(),end:dur===null?null:new Date(actual+dur).toISOString(),status:state||null,fields:f});
+    if(state==='CANCELLED') continue; if(dur!==null && dur<0) throw Error('Negative duration'); if(actual>=start && actual<end) { const occurrence={original:new Date(original).toISOString(),start:new Date(actual).toISOString(),end:dur===null?null:new Date(actual+dur).toISOString(),status:state||null,fields:f}; budget.remaining-=Buffer.byteLength(JSON.stringify(occurrence),'utf8')+1; if(budget.remaining<0) throw new BudgetExceeded('Occurrence output budget exceeded'); occurrences.push(occurrence); }
   }
   if([...overrides.keys()].some(k=>!found.has(k))) throw Error('Orphan recurrence override');
   return occurrences.sort((a,b)=>a.original.localeCompare(b.original));
 }
 export function auditOccurrences(before,after,startDate,endDate) {
+  checkCalendarSizes(before,after);
   if(!/^\d{4}-\d\d-\d\d$/.test(startDate)||!/^\d{4}-\d\d-\d\d$/.test(endDate)) throw Error('Window must use YYYY-MM-DD');
   const start=Date.parse(startDate+'T00:00:00Z'), end=Date.parse(endDate+'T00:00:00Z'); if(!Number.isFinite(start)||!Number.isFinite(end)||start>=end||new Date(start).toISOString().slice(0,10)!==startDate||new Date(end).toISOString().slice(0,10)!==endDate) throw Error('Invalid window');
   if(/(?:^|\r?\n)BEGIN:VTIMEZONE(?:\r?\n|$)/.test(before+'\n'+after)) return {window:{start:startDate,endExclusive:endDate,timezone:'UTC'},findings:[{status:'unverifiable',reason:'Embedded VTIMEZONE definitions are not interpreted'}]};
-  const group=text=> { const m=new Map(); for(const e of parse(text)) { const uid=one(e,'UID'); if(!uid || uid.parameters.length || !uid.value) { m.set(Symbol(),[e]); continue; } m.set(uid.value,[...(m.get(uid.value)||[]),e]); } return m; }; const a=group(before),b=group(after), findings=[];
+  const group=text=> { const m=new Map(); for(const e of parse(text)) { const uid=one(e,'UID'); if(!uid || uid.parameters.length || !uid.value) { m.set(Symbol(),[e]); continue; } m.set(uid.value,[...(m.get(uid.value)||[]),e]); } return m; }; const a=group(before),b=group(after), findings=[], budget={remaining:MAX_OCCURRENCE_BYTES};
   for(const uid of new Set([...a.keys(),...b.keys()])) { if(typeof uid!=='string'||!a.has(uid)||!b.has(uid)) { findings.push({uid:typeof uid==='string'?uid:null,status:'unverifiable',reason:'Unmatched or missing UID; rewritten identities require review'}); continue; }
-    try { const left=expand(a.get(uid),start,end),right=expand(b.get(uid),start,end); findings.push({uid,status:JSON.stringify(left)===JSON.stringify(right)?'preserved':'changed',before:left,after:right}); } catch(e) { findings.push({uid,status:'unverifiable',reason:e.message}); }
+    const previous=budget.remaining;
+    try { const left=expand(a.get(uid),start,end,budget),right=expand(b.get(uid),start,end,budget); findings.push({uid,status:JSON.stringify(left)===JSON.stringify(right)?'preserved':'changed',before:left,after:right}); } catch(e) { if(e instanceof BudgetExceeded) throw e; budget.remaining=previous; findings.push({uid,status:'unverifiable',reason:e.message}); }
   }
   return {window:{start:startDate,endExclusive:endDate,timezone:'UTC'},findings};
 }
