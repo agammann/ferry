@@ -5,6 +5,34 @@ const MAX_OCCURRENCE_BYTES = 1024 * 1024;
 export function checkCalendarSizes(before, after) {
   if (Buffer.byteLength(before, 'utf8') + Buffer.byteLength(after, 'utf8') > MAX_INPUT_BYTES) throw Error('Calendar input budget exceeded');
 }
+
+export function calendarLines(text) {
+  const lines = text.replace(/^\uFEFF/, '').replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
+  const components = [];
+  let completeCalendar = false;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    const marker = /^(BEGIN|END):([a-z0-9-]+)$/i.exec(line);
+    if (!marker) {
+      if (/^(BEGIN|END)(?:[:;]|$)/i.test(line)) throw Error('Invalid calendar component delimiter');
+      if (!components.length && line.trim()) throw Error('Input must contain a complete VCALENDAR export');
+      continue;
+    }
+    const action = marker[1].toUpperCase(), component = marker[2].toUpperCase();
+    lines[index] = `${action}:${component}`;
+    if (action === 'BEGIN') {
+      if (component === 'VCALENDAR' ? components.length : !components.length) throw Error('Invalid VCALENDAR nesting');
+      if (component === 'VEVENT' && components.length !== 1) throw Error('VEVENT must be directly inside VCALENDAR');
+      components.push(component);
+    } else {
+      if (components.pop() !== component) throw Error('Mismatched calendar component delimiters');
+      if (component === 'VCALENDAR') completeCalendar = true;
+    }
+  }
+  if (!completeCalendar || components.length) throw Error('Input must contain a complete VCALENDAR export');
+  return lines;
+}
+
 class BudgetExceeded extends Error {}
 const parts = (line) => { const i=line.indexOf(':'); if(i<0) throw Error('Malformed property'); const [name,...parameters]=line.slice(0,i).split(';'); return {name:name.toUpperCase(),parameters,value:line.slice(i+1)}; };
 function instant(value, parameters) {
@@ -21,9 +49,9 @@ function instant(value, parameters) {
   if(matches.length!==1) throw Error('Ambiguous or nonexistent local time');
   return matches[0];
 }
-function parse(text) {
+function parse(lines) {
   const events=[]; let e=null, depth=0;
-  for(const line of text.replace(/\r?\n[ \t]/g,'').split(/\r?\n/)) {
+  for(const line of lines) {
     if(line==='BEGIN:VEVENT') { if(e) throw Error('Nested event'); e=[]; continue; }
     if(!e) continue;
     if(line.startsWith('BEGIN:')) { depth++; e.push({name:'UNSUPPORTED-COMPONENT',value:line,parameters:[]}); continue; }
@@ -60,8 +88,9 @@ export function auditOccurrences(before,after,startDate,endDate) {
   checkCalendarSizes(before,after);
   if(!/^\d{4}-\d\d-\d\d$/.test(startDate)||!/^\d{4}-\d\d-\d\d$/.test(endDate)) throw Error('Window must use YYYY-MM-DD');
   const start=Date.parse(startDate+'T00:00:00Z'), end=Date.parse(endDate+'T00:00:00Z'); if(!Number.isFinite(start)||!Number.isFinite(end)||start>=end||new Date(start).toISOString().slice(0,10)!==startDate||new Date(end).toISOString().slice(0,10)!==endDate) throw Error('Invalid window');
-  if(/(?:^|\r?\n)BEGIN:VTIMEZONE(?:\r?\n|$)/.test(before+'\n'+after)) return {window:{start:startDate,endExclusive:endDate,timezone:'UTC'},findings:[{status:'unverifiable',reason:'Embedded VTIMEZONE definitions are not interpreted'}]};
-  const group=text=> { const m=new Map(); for(const e of parse(text)) { const uid=one(e,'UID'); if(!uid || uid.parameters.length || !uid.value) { m.set(Symbol(),[e]); continue; } m.set(uid.value,[...(m.get(uid.value)||[]),e]); } return m; }; const a=group(before),b=group(after), findings=[], budget={remaining:MAX_OCCURRENCE_BYTES};
+  const leftLines = calendarLines(before), rightLines = calendarLines(after);
+  if(leftLines.includes('BEGIN:VTIMEZONE') || rightLines.includes('BEGIN:VTIMEZONE')) return {window:{start:startDate,endExclusive:endDate,timezone:'UTC'},findings:[{status:'unverifiable',reason:'Embedded VTIMEZONE definitions are not interpreted'}]};
+  const group=lines=> { const m=new Map(); for(const e of parse(lines)) { const uid=one(e,'UID'); if(!uid || uid.parameters.length || !uid.value) { m.set(Symbol(),[e]); continue; } m.set(uid.value,[...(m.get(uid.value)||[]),e]); } return m; }; const a=group(leftLines),b=group(rightLines), findings=[], budget={remaining:MAX_OCCURRENCE_BYTES};
   for(const uid of new Set([...a.keys(),...b.keys()])) { if(typeof uid!=='string'||!a.has(uid)||!b.has(uid)) { findings.push({uid:typeof uid==='string'?uid:null,status:'unverifiable',reason:'Unmatched or missing UID; rewritten identities require review'}); continue; }
     const previous=budget.remaining;
     try { const left=expand(a.get(uid),start,end,budget),right=expand(b.get(uid),start,end,budget); findings.push({uid,status:JSON.stringify(left)===JSON.stringify(right)?'preserved':'changed',before:left,after:right}); } catch(e) { if(e instanceof BudgetExceeded) throw e; budget.remaining=previous; findings.push({uid,status:'unverifiable',reason:e.message}); }

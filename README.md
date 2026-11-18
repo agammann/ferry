@@ -1,15 +1,17 @@
-# Ferry research prototype
+# Ferry
 
-Ferry explores whether a read-only report can make calendar migration uncertainty clearer. This is an alpha research prototype, not a complete migration audit. It compares raw event properties and expands a deliberately small recurrence subset in a bounded window. Files stay local; the program does not transfer data.
+Ferry compares two local `.ics` exports before and after a calendar migration. It reports changes in event properties and compares supported occurrences within a date window. It reads the exports in place and writes JSON and offline HTML reports on your computer.
 
-Requires Node.js 20 or later. No dependencies or installation are needed:
+Requires Node.js 20 or later. The command runs directly from the source folder using Node's built-in modules. Try the included fictional exports first.
 
 ```sh
 node ferry.mjs examples/before.ics examples/after.ics report.json 2027-01-01 2028-01-01
 node --test
 ```
 
-The command creates JSON and an offline HTML rendering with exclusive file creation. Both output names must be unused; existing files are never overwritten. If either reservation fails, the newly reserved file is removed where possible. Reports can contain calendar content and should be treated as private. Input hashes identify the UTF-8 decoded content, not necessarily original file bytes. Originals are only read. The two inputs together must fit within 1 MiB, and occurrence data across both calendars is limited to 1 MiB of compact JSON. The command stops without creating reports when either limit is exceeded.
+Open `report.json.html` to see the report. The sample identifies a description that disappeared after migration. For your own exports, replace the two example paths, choose an unused JSON output name and supply the UTC start and exclusive end dates as `YYYY-MM-DD`. Each input needs complete `VCALENDAR` framing. Ferry recognizes case-insensitive component markers. A well-framed calendar with zero `VEVENT` components has an event count of zero. Text files and malformed component boundaries fail before output creation. [iCalendar specification](https://www.rfc-editor.org/rfc/rfc5545#section-3.1)
+
+Ferry reserves both output names before writing and removes a new reservation if the other name is unavailable, where possible. Reports can contain calendar content and should be treated as private. Input hashes identify the UTF-8 decoded content. The two inputs together must fit within 1 MiB, and occurrence data across both calendars is limited to 1 MiB of compact JSON. Exceeding either limit stops report creation.
 
 ## Coverage and limitations
 
@@ -17,6 +19,6 @@ The window is UTC, start inclusive and end exclusive; occurrences are selected b
 
 When a master has STATUS but an exception omits it, the series is unverifiable: Ferry does not infer the exception's effective status. [RFC 5545 section 3.8.4.4](https://www.rfc-editor.org/rfc/rfc5545#section-3.8.4.4) identifies an exception's original instance, but does not explicitly define this missing-status inheritance. The separate raw field comparison is literal, so a different time-zone representation may appear changed even when the occurrence audit recognizes the same instant. `preserved` applies only to the supported fields and bounded window; it is not proof of completeness. Two exports may share omissions. Do not delete originals based on this report.
 
-## Comparison and open hypothesis
+## Related tools
 
-[FindUtils ICS Diff](https://findutils.com/convert/ics-diff/) already compares events by UID and recurrence identity and downloads reports. [Guillaume Richard's comparer](https://grichard.eu/en/tools/ics-compare/) handles regenerated IDs and UTC normalization, and flags duplicates and orphan exceptions. [Data Transfer Project](https://github.com/dtinit/data-transfer-project) supplies portability infrastructure. Ferry explores a bounded occurrence audit; no novelty or comparative superiority is claimed. The next study should run identical synthetic DST, recurrence exception, cancellation, UID rewrite and dropped-field cases through the comparison tools and record observed results. No comparative results are claimed yet.
+Cross-tool results for daylight-saving transitions, recurrence exceptions, cancellations, rewritten IDs and dropped fields remain unverified. Related projects include [FindUtils ICS Diff](https://findutils.com/convert/ics-diff/), [Guillaume Richard's calendar comparer](https://grichard.eu/en/tools/ics-compare/) and [Data Transfer Project](https://github.com/dtinit/data-transfer-project).
