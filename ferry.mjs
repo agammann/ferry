@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Research prototype: deliberately avoids interpreting unsupported calendar semantics.
+// Compare local calendar exports within the documented evidence scope.
 import { readSync, writeFileSync, openSync, closeSync, fstatSync, lstatSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { auditOccurrences, checkCalendarSizes, MAX_INPUT_BYTES } from './occurrences.mjs';
+import { auditOccurrences, calendarLines, checkCalendarSizes, MAX_INPUT_BYTES } from './occurrences.mjs';
 
 function readCalendar(path, remaining) {
   const fd=openSync(path,'r');
@@ -18,9 +18,8 @@ function readCalendar(path, remaining) {
 const supported = new Set(['UID','SUMMARY','DESCRIPTION','LOCATION','DTSTART','DTEND','STATUS']);
 const ignored = new Set(['DTSTAMP','LAST-MODIFIED','CREATED','SEQUENCE']);
 export function parse(text) {
-  const lines = text.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '').split(/\r?\n/);
   const events = []; let event = null, depth = 0;
-  for (const line of lines) {
+  for (const line of calendarLines(text)) {
     if (line === 'BEGIN:VEVENT') { if (event) throw Error('Nested VEVENT'); event = { fields: {}, unknown: [] }; depth = 0; continue; }
     if (!event) continue;
     if (line.startsWith('BEGIN:')) { depth++; event.unknown.push(line); continue; }
@@ -49,7 +48,7 @@ export function compare(before, after) {
   }
   return {version:1, inputSha256: [before,after].map(s => createHash('sha256').update(s).digest('hex')), counts:{before:left.length,after:right.length}, findings, limitations:['Raw field comparison only; timezone representations are not normalized.', 'Recurrences, exceptions, alarms and unknown properties are not interpreted.', 'Two exports cannot prove source completeness.']};
 }
-export function html(report) { const escaped = JSON.stringify(report, null, 2).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); return `<!doctype html><meta charset="utf-8"><title>Ferry research report</title><h1>Ferry research report</h1><p>Review all uncertainty. This report does not establish migration completeness.</p><pre>${escaped}</pre>`; }
+export function html(report) { const escaped = JSON.stringify(report, null, 2).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); return `<!doctype html><meta charset="utf-8"><title>Ferry calendar migration report</title><h1>Ferry calendar migration report</h1><p>Review unverifiable findings before relying on the comparison. Coverage is limited to the supplied exports, supported fields and selected occurrence window. Keep your originals.</p><pre>${escaped}</pre>`; }
 // Reserve both names exclusively before writing. Existing files, symlinks, hard links,
 // and case-insensitive aliases all fail at the filesystem boundary without truncation.
 export function writeReports(output, report) {

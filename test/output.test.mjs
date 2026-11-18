@@ -16,3 +16,13 @@ test('normalized input path is never overwritten',()=>setup(({dir,a,b})=>{const 
 test('hardlink alias to input is never overwritten',t=>setup(({dir,a,b})=>{const out=join(dir,'alias'); try { linkSync(a,out); } catch(e) { if(['EPERM','EACCES','ENOTSUP'].includes(e.code)) { t.skip('Filesystem does not permit hard links'); return; } throw e; } const before=readFileSync(a); assert.notEqual(run(a,b,out).status,0); assert.deepEqual(readFileSync(a),before); assert.deepEqual(readFileSync(out),before); }));
 test('symlink alias to input is never overwritten',t=>setup(({dir,a,b})=>{const out=join(dir,'alias'); try { symlinkSync(a,out); } catch(e) { if(['EPERM','EACCES','ENOTSUP'].includes(e.code)) { t.skip('Filesystem does not permit symlinks'); return; } throw e; } const before=readFileSync(a); assert.notEqual(run(a,b,out).status,0); assert.deepEqual(readFileSync(a),before); }));
 test('fresh output creates both reports',()=>setup(({dir,a,b})=>{const out=join(dir,'out'); assert.equal(run(a,b,out).status,0); assert.ok(existsSync(out)); assert.ok(existsSync(out+'.html')); }));
+
+test('mistaken text input fails before either report is created', () => setup(({ dir, a, b }) => {
+  const out = join(dir, 'report.json');
+  writeFileSync(a, 'Workshop notes, rather than a calendar export.');
+  const result = run(a, b, out);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /complete VCALENDAR export/);
+  assert.equal(existsSync(out), false);
+  assert.equal(existsSync(out + '.html'), false);
+}));
